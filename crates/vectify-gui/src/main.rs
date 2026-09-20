@@ -1,4 +1,6 @@
 //! Vectify: a desktop raster-to-vector tracer.
+//!
+//! NOTE: 100% vibe coded as a one-off tool; not a maintained product.
 
 // Do not pop up a console window alongside the GUI on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -14,6 +16,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1360.0, 880.0])
             .with_min_inner_size([900.0, 600.0])
+            .with_icon(vectify_gui::app_icon())
             .with_title("Vectify"),
         ..Default::default()
     };

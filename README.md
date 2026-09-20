@@ -1,4 +1,15 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Vectify logo: a sunset over mountains, pixelated on the left and resolved into smooth vector shapes on the right" width="240">
+</p>
+
 # Vectify
+
+> [!WARNING]
+> **100% vibe coded, one-off tool.** Every line of this project was written by
+> an AI assistant from natural-language prompts. It was built to scratch one
+> itch, not as a maintained product: expect rough edges, no support, no stability
+> guarantees, and no promise of future updates. Use at your own risk, and check
+> the output before relying on it.
 
 An open-source raster-to-vector tracer that tries to **invert rasterisation**
 rather than outline pixels, with a measurement harness that checks whether it
@@ -16,7 +27,7 @@ to choose settings by measurement instead of by guesswork.
 ```
 cargo run --release -p vectify-gui                 # desktop app
 cargo run --release -p vectify-cli -- --help       # command line
-cargo test --release                               # 145 tests
+cargo test --release                               # 146 tests
 ```
 
 ---
@@ -394,6 +405,8 @@ crates/vectify-core/src/
   synth.rs       synthetic scenes with known ground truth
 crates/vectify-cli/    trace / auto / score / bench / inspect
 crates/vectify-gui/    eframe desktop app
+assets/                logo.png (transparent, full size), icon.png, icon.ico;
+                       source/ holds the original the others were made from
 ```
 
 Pipeline order is not arbitrary: sub-pixel refinement runs **before** corner

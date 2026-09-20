@@ -1,3 +1,8 @@
+//! Vectify tracing engine.
+//!
+//! NOTE: 100% vibe coded as a one-off tool. Written by an AI assistant from
+//! prompts, not a maintained library; no stability guarantees.
+
 pub mod auto;
 pub mod color;
 pub mod config;

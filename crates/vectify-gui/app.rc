@@ -1,0 +1,5 @@
+// Windows resources for vectify-gui.exe, compiled by build.rs.
+//
+// Explorer, the taskbar and Alt-Tab take an executable's icon from its
+// lowest-numbered icon resource, so this must stay as ID 1.
+1 ICON "../../assets/icon.ico"

@@ -1,4 +1,6 @@
 //! Vectify command line: trace, auto-select, score and benchmark.
+//!
+//! NOTE: 100% vibe coded as a one-off tool; not a maintained product.
 
 mod bench;
 mod report;
