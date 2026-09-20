@@ -1,0 +1,26 @@
+[package]
+name = "vectify-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop GUI for the Vectify raster-to-vector tracer"
+
+[lib]
+name = "vectify_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vectify-gui"
+path = "src/main.rs"
+
+[dependencies]
+vectify-core = { path = "../vectify-core" }
+anyhow.workspace = true
+image.workspace = true
+rayon.workspace = true
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36"
+rfd = "0.17"
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
