@@ -12,6 +12,7 @@ use vectify_core::color::Rgba8;
 use vectify_core::config::{
     PaletteMethod, Preset, SegmentMode, VectorFormat, VectorizeConfig,
 };
+use vectify_core::denoise::BilateralConfig;
 use vectify_core::export;
 use vectify_core::raster::Raster;
 use vectify_core::score::ScoreConfig;
@@ -44,6 +45,8 @@ pub struct VectifyApp {
     preset: Preset,
     target_match: f64,
     delta_e: f32,
+    denoise_reference: bool,
+    denoise: BilateralConfig,
     export_format: VectorFormat,
 
     worker: Worker,
@@ -80,6 +83,8 @@ impl VectifyApp {
             preset: Preset::Logo,
             target_match: 99.0,
             delta_e: 2.0,
+            denoise_reference: false,
+            denoise: BilateralConfig::default(),
             export_format: VectorFormat::Svg,
             worker,
             awaiting: None,
@@ -101,7 +106,24 @@ impl VectifyApp {
         ScoreConfig {
             delta_e_threshold: self.delta_e,
             target_match: self.target_match,
+            reference_denoise: self.denoise_reference.then_some(self.denoise),
             ..Default::default()
+        }
+    }
+
+    /// The amplified difference between the original and the trace. When the
+    /// score was measured against a smoothed original, this shows that same
+    /// image, or the view would light up with noise the score deliberately
+    /// ignored.
+    fn difference_image(&self, src: &Raster, outcome: &TraceOutcome) -> Raster {
+        match &outcome.reference {
+            // The smoothed reference is composited over the scoring background,
+            // so the rendering must be too, or transparent areas would differ.
+            Some(reference) => reference.difference(
+                &outcome.rendered.composite_over(self.score_config().background),
+                self.diff_gain,
+            ),
+            None => src.difference(&outcome.rendered, self.diff_gain),
         }
     }
 
@@ -268,7 +290,7 @@ impl VectifyApp {
                     let diff = self
                         .source
                         .as_ref()
-                        .map(|s| s.raster.difference(&outcome.rendered, self.diff_gain));
+                        .map(|s| self.difference_image(&s.raster, &outcome));
                     let vector_tex = ctx.load_texture(
                         "vector",
                         to_color_image(&outcome.rendered),
@@ -325,12 +347,14 @@ impl VectifyApp {
             return;
         }
         self.diff_dirty = false;
-        let (Some(src), Some(preview)) = (&self.source, &mut self.preview) else {
+        let (Some(src), Some(preview)) = (&self.source, &self.preview) else {
             return;
         };
-        let diff = src.raster.difference(&preview.outcome.rendered, self.diff_gain);
-        preview.diff_tex =
-            ctx.load_texture("diff", to_color_image(&diff), TextureOptions::NEAREST);
+        let diff = self.difference_image(&src.raster, &preview.outcome);
+        let tex = ctx.load_texture("diff", to_color_image(&diff), TextureOptions::NEAREST);
+        if let Some(preview) = &mut self.preview {
+            preview.diff_tex = tex;
+        }
     }
 
     fn export(&mut self) {
@@ -682,6 +706,13 @@ impl VectifyApp {
                         .small()
                         .color(Color32::from_gray(150)),
                 );
+                if r.reference_denoised {
+                    ui.label(
+                        RichText::new("vs smoothed original")
+                            .small()
+                            .color(Color32::from_gray(150)),
+                    );
+                }
             });
         });
 
@@ -1113,6 +1144,35 @@ impl VectifyApp {
                          perceptibility.",
                     )
                     .changed();
+                changed |= ui
+                    .checkbox(&mut self.denoise_reference, "Smooth original before scoring")
+                    .on_hover_text(
+                        "Score against an edge-preserving (bilateral) smoothing of the \
+                         original, so JPEG artefacts and noise that a flat region rightly \
+                         ignores do not count as error. Edges are kept, unlike a plain \
+                         blur. Only the score and difference view change: the tracer still \
+                         sees the original. Scores measured this way run higher and are \
+                         not comparable with ones that were not. Costs a few seconds on \
+                         a large image.",
+                    )
+                    .changed();
+                if self.denoise_reference {
+                    changed |= ui
+                        .add(
+                            egui::Slider::new(&mut self.denoise.range_sigma, 1.0..=15.0)
+                                .text("smoothing strength"),
+                        )
+                        .on_hover_text(
+                            "Colour difference below which neighbouring pixels are averaged \
+                             together. Higher removes stronger noise, but softens \
+                             low-contrast edges in the reference.",
+                        )
+                        .changed();
+                    changed |= ui
+                        .add(egui::Slider::new(&mut self.denoise.radius, 1..=6).text("radius"))
+                        .on_hover_text("Smoothing window radius in pixels.")
+                        .changed();
+                }
                 ui.label(
                     RichText::new(
                         "Note: even a perfect vectorisation scores around 99.5% here, \

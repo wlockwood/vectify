@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use crate::color::{delta_e2000, srgb_to_lab};
 use crate::config::{OutputConfig, VectorFormat};
+use crate::denoise::{bilateral, BilateralConfig};
 use crate::export;
 use crate::model::{Complexity, VectorImage};
 use crate::raster::Raster;
@@ -43,6 +44,12 @@ pub struct ScoreConfig {
     pub background: [f32; 3],
     /// Match percentage a result must reach to count as acceptable.
     pub target_match: f64,
+    /// Smooth the original with an edge-preserving filter before comparing, so
+    /// JPEG artefacts and noise that a flat vector region rightly ignores do not
+    /// count as error. Only the reference is filtered; the tracer still sees the
+    /// original, and the rendering is never touched.
+    #[serde(default)]
+    pub reference_denoise: Option<BilateralConfig>,
 }
 
 impl Default for ScoreConfig {
@@ -52,6 +59,7 @@ impl Default for ScoreConfig {
             supersample: 1,
             background: [1.0, 1.0, 1.0],
             target_match: 99.0,
+            reference_denoise: None,
         }
     }
 }
@@ -70,6 +78,9 @@ pub struct ScoreReport {
     /// Structural similarity on luma, in 0..1.
     pub ssim: f64,
     pub complexity: Complexity,
+    /// Whether the original was smoothed before comparing. Scores measured that
+    /// way run higher and are not comparable with ones that were not.
+    pub reference_denoised: bool,
     /// Size of the serialised vector file in bytes.
     pub output_bytes: usize,
     pub render_ms: f64,
@@ -236,9 +247,27 @@ pub fn ssim(a: &Raster, b: &Raster) -> f64 {
     (total / (w * h) as f64).clamp(-1.0, 1.0)
 }
 
+/// The original as the metrics see it: composited over the background and, when
+/// configured, smoothed.
+///
+/// Filtering costs seconds on a large image, so a caller scoring many
+/// renderings of one original should do this once and use `compare_prepared` /
+/// `score_prepared`, rather than paying for it on every `compare` / `score`.
+pub fn prepare_reference(original: &Raster, cfg: &ScoreConfig) -> Raster {
+    let opaque = original.composite_over(cfg.background);
+    match &cfg.reference_denoise {
+        Some(d) => bilateral(&opaque, d),
+        None => opaque,
+    }
+}
+
 /// Compare two rasters of equal size.
 pub fn compare(original: &Raster, rendered: &Raster, cfg: &ScoreConfig) -> ScoreReport {
-    let a = original.composite_over(cfg.background);
+    compare_prepared(&prepare_reference(original, cfg), rendered, cfg)
+}
+
+/// `compare`, for an original already run through `prepare_reference`.
+pub fn compare_prepared(a: &Raster, rendered: &Raster, cfg: &ScoreConfig) -> ScoreReport {
     let b = rendered.composite_over(cfg.background);
     let n = a.data.len().min(b.data.len());
 
@@ -290,19 +319,29 @@ pub fn compare(original: &Raster, rendered: &Raster, cfg: &ScoreConfig) -> Score
         max_delta_e,
         rmse,
         psnr,
-        ssim: ssim(&a, &b),
+        ssim: ssim(a, &b),
+        reference_denoised: cfg.reference_denoise.is_some(),
         ..Default::default()
     }
 }
 
 /// Full round trip: export, render, compare, and record complexity.
 pub fn score(original: &Raster, image: &VectorImage, cfg: &ScoreConfig) -> Result<ScoreReport> {
+    score_prepared(&prepare_reference(original, cfg), image, cfg)
+}
+
+/// `score`, for an original already run through `prepare_reference`.
+pub fn score_prepared(
+    reference: &Raster,
+    image: &VectorImage,
+    cfg: &ScoreConfig,
+) -> Result<ScoreReport> {
     let t = Instant::now();
     let rendered = render(image, cfg.supersample)?;
     let render_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     let t = Instant::now();
-    let mut report = compare(original, &rendered, cfg);
+    let mut report = compare_prepared(reference, &rendered, cfg);
     report.compare_ms = t.elapsed().as_secs_f64() * 1000.0;
     report.render_ms = render_ms;
     report.complexity = image.complexity();
@@ -356,6 +395,46 @@ mod tests {
         let r = compare(&a, &b, &ScoreConfig::default());
         assert!(r.match_pct > 99.9, "match {}", r.match_pct);
         assert!(r.rmse > 0.0, "rmse should still register the difference");
+    }
+
+    #[test]
+    fn denoising_the_reference_forgives_noise_but_not_real_differences() {
+        // A flat grey field with a checkerboard wobble, standing in for JPEG
+        // noise. The flat render is what a tracer should produce.
+        let mut noisy = solid(32, 32, [0.5, 0.5, 0.5, 1.0]);
+        for y in 0..32 {
+            for x in 0..32 {
+                let v = if (x + y) % 2 == 0 { 0.53 } else { 0.47 };
+                noisy.set(x, y, [v, v, v, 1.0]);
+            }
+        }
+        let flat = solid(32, 32, [0.5, 0.5, 0.5, 1.0]);
+        let wrong = solid(32, 32, [0.9, 0.9, 0.9, 1.0]);
+
+        let raw = ScoreConfig::default();
+        let smoothed = ScoreConfig {
+            reference_denoise: Some(BilateralConfig::default()),
+            ..Default::default()
+        };
+
+        let raw_report = compare(&noisy, &flat, &raw);
+        let smooth_report = compare(&noisy, &flat, &smoothed);
+        assert!(!raw_report.reference_denoised);
+        assert!(smooth_report.reference_denoised);
+        assert!(
+            raw_report.match_pct < 50.0,
+            "the noise should register as error unfiltered, got {:.1}%",
+            raw_report.match_pct
+        );
+        assert!(
+            smooth_report.match_pct > 99.0,
+            "the noise should not count once smoothed, got {:.1}%",
+            smooth_report.match_pct
+        );
+
+        // Smoothing must not make a genuinely different image pass.
+        let bad = compare(&noisy, &wrong, &smoothed);
+        assert!(bad.match_pct < 1.0, "wrong colour scored {:.1}%", bad.match_pct);
     }
 
     #[test]

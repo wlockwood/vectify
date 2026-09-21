@@ -7,6 +7,7 @@ pub mod auto;
 pub mod color;
 pub mod config;
 pub mod corners;
+pub mod denoise;
 pub mod export;
 pub mod fitting;
 pub mod geom;

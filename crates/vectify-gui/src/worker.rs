@@ -21,7 +21,7 @@ use vectify_core::color::LabCache;
 use vectify_core::config::VectorizeConfig;
 use vectify_core::model::VectorImage;
 use vectify_core::raster::Raster;
-use vectify_core::score::{score, render, ScoreConfig, ScoreReport};
+use vectify_core::score::{prepare_reference, render, score_prepared, ScoreConfig, ScoreReport};
 use vectify_core::segment::scoring_reference;
 use vectify_core::vectorize::{vectorize_with_cache, TraceStats};
 
@@ -52,6 +52,10 @@ pub struct TraceOutcome {
     pub stats: TraceStats,
     pub report: ScoreReport,
     pub rendered: Raster,
+    /// The smoothed original the score was measured against, when smoothing was
+    /// on, so the difference view can show what the score actually saw. `None`
+    /// means the original itself was used, and is not copied here.
+    pub reference: Option<Raster>,
     pub config: VectorizeConfig,
 }
 
@@ -184,7 +188,8 @@ fn run(
             // Keyed-out colours are absent from the output on purpose; score
             // against an image with them removed so they do not count as error.
             let reference = scoring_reference(&image, &config.segment, cache);
-            match score(&reference, &traced.image, &score_cfg) {
+            let prepared = prepare_reference(&reference, &score_cfg);
+            match score_prepared(&prepared, &traced.image, &score_cfg) {
                 Ok(report) => match render(&traced.image, 1) {
                     Ok(rendered) => Response::Traced {
                         generation,
@@ -193,6 +198,7 @@ fn run(
                             stats: traced.stats,
                             report,
                             rendered,
+                            reference: score_cfg.reference_denoise.is_some().then_some(prepared),
                             config: *config,
                         }),
                     },

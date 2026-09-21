@@ -329,9 +329,41 @@ vectify gen-testdata testdata             # write the synthetic suite as PNGs
 inferred from the extension. `auto` accepts `--transparent` and
 `--transparent-tolerance` too.
 
+`trace`, `auto` and `score` also accept `--denoise-reference`, `--denoise-radius`
+and `--denoise-sigma`; see [Scoring JPEGs](#scoring-jpegs).
+
 `trace` uses exactly the settings you give it. `auto` tries many settings, scores
 each one, and keeps the best, so it needs no tuning but takes longer. If you are
 unsure where to start, start with `auto`.
+
+### Scoring JPEGs
+
+A JPEG's blocking and noise count as error against a flat vector region, though
+no tracer should reproduce them. `--denoise-reference` (or "Smooth original
+before scoring" in the GUI) scores against a **bilateral-filtered** copy of the
+original instead. Unlike a box or Gaussian blur, a bilateral filter only averages
+pixels that are close in colour, so noise in flat areas is smoothed while edges
+stay sharp.
+
+```
+vectify score photo.jpg out.svg --denoise-reference
+vectify auto  photo.jpg -o out.svg --denoise-reference --denoise-sigma 6
+```
+
+- Only the scoring reference is smoothed. The tracer still sees the original.
+- Scores measured this way run higher and are **not comparable** with ones that
+  were not; results are marked as such.
+- `--denoise-sigma` (default 4, in CIELAB units) is the colour difference below
+  which neighbours are averaged. Raise it for stronger noise, at the cost of
+  softening low-contrast edges in the reference.
+- It recovers a lot but not everything. On hard-edged test images saved as
+  JPEG, it took a correct trace from ~90% to ~94% at quality 85 and from ~75% to
+  ~78% at quality 30. Ringing next to edges and 4:2:0 chroma bleed look like real
+  structure to the filter, so heavily compressed images stay well below what
+  the same trace scores against the clean source.
+- On an image with no JPEG damage the score moves by 0.1 points or less, so it is
+  not simply rewarding blur.
+- It costs about a second on a 12-megapixel image.
 
 ### Transparent colours
 

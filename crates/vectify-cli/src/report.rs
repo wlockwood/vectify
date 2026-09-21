@@ -28,6 +28,9 @@ pub fn format_report(r: &ScoreReport) -> String {
         bar((r.match_pct - 90.0) / 10.0, 24),
         2.0
     ));
+    if r.reference_denoised {
+        s.push_str("  note    scored against a smoothed copy of the original\n");
+    }
     s.push_str(&format!(
         "  deltaE  mean {:.2}  p95 {:.2}  max {:.2}\n",
         r.mean_delta_e, r.p95_delta_e, r.max_delta_e
@@ -143,6 +146,7 @@ pub fn report_json(r: &ScoreReport) -> Value {
         "rmse": r.rmse,
         "psnr": r.psnr,
         "ssim": r.ssim,
+        "reference_denoised": r.reference_denoised,
         "total_points": r.complexity.total_points(),
         "anchors": r.complexity.anchors,
         "handles": r.complexity.handles,

@@ -16,6 +16,7 @@ use vectify_core::config::{
     PaletteMethod, Preset, SegmentMode, VectorFormat, VectorizeConfig,
     DEFAULT_TRANSPARENT_TOLERANCE,
 };
+use vectify_core::denoise::{BilateralConfig, DEFAULT_RADIUS, DEFAULT_RANGE_SIGMA};
 use vectify_core::export;
 use vectify_core::raster::Raster;
 use vectify_core::score::{score, ScoreConfig};
@@ -210,6 +211,33 @@ impl TuningArgs {
     }
 }
 
+/// Options for smoothing the original before it is scored against.
+#[derive(Args)]
+struct ReferenceArgs {
+    /// Score against an edge-preserving (bilateral) smoothing of the original, so
+    /// JPEG artefacts and noise a flat vector region rightly ignores do not count
+    /// as error. Only the scoring reference is smoothed; the tracer still sees the
+    /// original. Scores measured this way are not comparable with ones that were not.
+    #[arg(long)]
+    denoise_reference: bool,
+    /// Smoothing window radius in pixels.
+    #[arg(long, default_value_t = DEFAULT_RADIUS)]
+    denoise_radius: u32,
+    /// Colour difference (CIELAB) below which neighbours are averaged together.
+    /// Raise it to remove stronger noise, at the cost of softening low-contrast edges.
+    #[arg(long, default_value_t = DEFAULT_RANGE_SIGMA)]
+    denoise_sigma: f32,
+}
+
+impl ReferenceArgs {
+    fn config(&self) -> Option<BilateralConfig> {
+        self.denoise_reference.then_some(BilateralConfig {
+            radius: self.denoise_radius,
+            range_sigma: self.denoise_sigma,
+        })
+    }
+}
+
 #[derive(Args)]
 struct TraceArgs {
     /// Input raster image.
@@ -219,6 +247,8 @@ struct TraceArgs {
     output: PathBuf,
     #[command(flatten)]
     tuning: TuningArgs,
+    #[command(flatten)]
+    reference: ReferenceArgs,
     /// Measure the result by rendering it back to pixels and comparing.
     #[arg(long)]
     check: bool,
@@ -258,6 +288,8 @@ struct AutoArgs {
     precision: u32,
     #[command(flatten)]
     transparency: TransparencyArgs,
+    #[command(flatten)]
+    reference: ReferenceArgs,
 }
 
 #[derive(Args)]
@@ -268,6 +300,8 @@ struct ScoreArgs {
     vector: PathBuf,
     #[arg(long, default_value_t = 2.0)]
     delta_e: f32,
+    #[command(flatten)]
+    reference: ReferenceArgs,
     #[arg(long)]
     json: bool,
 }
@@ -376,7 +410,10 @@ fn cmd_trace(a: TraceArgs) -> Result<()> {
     );
 
     if a.check || a.dump_render.is_some() {
-        let sc = ScoreConfig::default();
+        let sc = ScoreConfig {
+            reference_denoise: a.reference.config(),
+            ..Default::default()
+        };
         // Judge a colour-keyed trace against the image it was asked to
         // reproduce, not one whose keyed-out pixels count as missing.
         let reference = scoring_reference(&img, &cfg.segment, &LabCache::new());
@@ -409,6 +446,7 @@ fn cmd_auto(a: AutoArgs) -> Result<()> {
     };
     cfg.score.target_match = a.target;
     cfg.score.delta_e_threshold = a.delta_e;
+    cfg.score.reference_denoise = a.reference.config();
 
     println!(
         "Searching for the best settings for {} ({}x{})...",
@@ -488,6 +526,7 @@ fn cmd_score(a: ScoreArgs) -> Result<()> {
     }
     let mut sc = ScoreConfig::default();
     sc.delta_e_threshold = a.delta_e;
+    sc.reference_denoise = a.reference.config();
     let mut report = vectify_core::score::compare(&img, &rendered, &sc);
     report.output_bytes = svg.len();
 
