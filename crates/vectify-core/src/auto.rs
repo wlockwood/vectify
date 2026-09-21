@@ -281,11 +281,14 @@ pub fn derive_point_budget(width: u32, height: u32) -> usize {
 /// How many percentage points of match each doubling of control points must
 /// earn to be worth taking, when the fidelity target is out of reach.
 ///
-/// Tuned against the benchmark: at 0.25 the search still keeps detail that
-/// genuinely helps (a few hundred points for half a point of match on clean
-/// artwork) while refusing trades like thirty-five times the points for a
-/// quarter of a point of match.
-const POINT_DISCOUNT: f64 = 0.25;
+/// Tuned against the benchmark. At 0.25 the search still refused absurd trades
+/// like thirty-five times the points for a quarter of a point of match, but
+/// took milder ones it should not have: on a flat-colour logo it picked
+/// 28,000 points over 1,900 for under one point of match, because fifteen
+/// times the points cost it only about a point of score. At 0.5 a few hundred
+/// points for half a point of match on clean artwork is still worth it, and
+/// that trade is not.
+const POINT_DISCOUNT: f64 = 0.5;
 
 /// Accuracy discounted by what it cost to buy.
 ///
@@ -415,20 +418,38 @@ fn seed_configs(p: &ImageProfile, max: usize) -> Vec<(String, VectorizeConfig)> 
     out
 }
 
+/// Loosest curve tolerance, in pixels, that refinement will try.
+const MAX_TOLERANCE: f64 = 3.0;
+
 /// Parameter neighbourhoods explored during refinement, most valuable first.
 fn refinement_axes(cfg: &VectorizeConfig) -> Vec<(&'static str, Vec<VectorizeConfig>)> {
     let mut axes: Vec<(&'static str, Vec<VectorizeConfig>)> = Vec::new();
 
     // Tolerance trades points against accuracy more directly than anything
     // else, so it is swept first and most widely.
+    //
+    // The sweep has to reach well past a pixel. Hard-edged input has one-pixel
+    // stair-steps, and while the tolerance is below roughly 0.7px the fitter
+    // must give every step its own line segment: a heart-and-leaf logo took
+    // 3,200 points at 0.1px, 815 at 0.5px and 177 at 1.0px, for the same match.
+    // Presets start at 0.3-0.5px, so multipliers stopping near 2x never got
+    // there.
     let tol = cfg.fit.tolerance;
+    let mut tolerances: Vec<f64> = Vec::new();
+    for m in [0.35, 0.6, 0.85, 1.3, 1.8, 2.5, 3.5, 5.0] {
+        let t = (tol * m).clamp(0.02, MAX_TOLERANCE);
+        // Large multipliers all clamp to the same ceiling; trace it once.
+        if !tolerances.iter().any(|&u| (u - t).abs() < 1e-9) {
+            tolerances.push(t);
+        }
+    }
     axes.push((
         "tolerance",
-        [0.35, 0.6, 0.85, 1.3, 1.8]
-            .iter()
-            .map(|m| {
+        tolerances
+            .into_iter()
+            .map(|t| {
                 let mut c = cfg.clone();
-                c.fit.tolerance = (tol * m).clamp(0.02, 4.0);
+                c.fit.tolerance = t;
                 c
             })
             .collect(),
@@ -878,6 +899,75 @@ mod tests {
         let a = mk(70.0, 50_000);
         let b = mk(60.0, 60_000);
         assert_eq!(better(&a, &b, target, budget), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn fifteen_times_the_points_is_not_worth_under_a_point_of_match() {
+        // Real numbers from a flat-colour logo where the target was out of
+        // reach. All three are inside the budget, so only the fallback ranking
+        // is in play, and it used to pick the 28,058-point trace.
+        let mk = |match_pct: f64, points: usize| {
+            let mut c = Candidate {
+                label: String::new(),
+                config: VectorizeConfig::default(),
+                report: ScoreReport {
+                    match_pct,
+                    ..Default::default()
+                },
+                stats: TraceStats::default(),
+            };
+            c.report.complexity.anchors = points;
+            c
+        };
+        let target = 99.0;
+        let budget = derive_point_budget(1254, 1254);
+
+        let lean = mk(96.52, 1_934);
+        let middling = mk(97.09, 17_984);
+        let bloated = mk(97.45, 28_058);
+        assert!(bloated.points() <= budget);
+        for other in [&middling, &bloated] {
+            assert_eq!(
+                better(&lean, other, target, budget),
+                std::cmp::Ordering::Less,
+                "{} points beat {}",
+                other.points(),
+                lean.points()
+            );
+        }
+    }
+
+    #[test]
+    fn refinement_tolerances_reach_past_a_pixel_without_repeats() {
+        // Presets start below a pixel, and hard-edged art only collapses its
+        // stair-steps into a few segments once tolerance clears one.
+        let cfg = Preset::Logo.config();
+        let axes = refinement_axes(&cfg);
+        let (_, variants) = axes.iter().find(|(n, _)| *n == "tolerance").unwrap();
+        let tols: Vec<f64> = variants.iter().map(|c| c.fit.tolerance).collect();
+        assert!(
+            tols.iter().any(|&t| t >= 1.0),
+            "tolerance sweep tops out at {:?}",
+            tols
+        );
+        assert!(tols.iter().all(|&t| t <= MAX_TOLERANCE));
+        for (i, a) in tols.iter().enumerate() {
+            for b in &tols[i + 1..] {
+                assert!((a - b).abs() > 1e-9, "duplicate tolerance in {tols:?}");
+            }
+        }
+
+        // A start already near the ceiling must not waste evaluations on
+        // several copies of it.
+        let mut hi = cfg.clone();
+        hi.fit.tolerance = 2.5;
+        let axes = refinement_axes(&hi);
+        let (_, variants) = axes.iter().find(|(n, _)| *n == "tolerance").unwrap();
+        let ceiling = variants
+            .iter()
+            .filter(|c| (c.fit.tolerance - MAX_TOLERANCE).abs() < 1e-9)
+            .count();
+        assert_eq!(ceiling, 1);
     }
 
     #[test]
