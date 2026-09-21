@@ -182,12 +182,45 @@ fn rapid_setting_changes_stay_consistent() {
     );
 }
 
+/// Render the harness through wgpu, or `None` if the machine has no GPU adapter.
+///
+/// `Harness::render` returns a `Result`, but that does not cover this case: it
+/// creates the renderer lazily, and the adapter lookup inside it `expect`s
+/// instead of returning an error, so with no adapter (a CI runner, a container)
+/// it panics. Only that specific panic is turned into a skip. Any other panic,
+/// and any real `Err` from rendering, is a genuine failure and is not hidden.
+///
+/// The panic's message is still printed by the default hook even though it is
+/// caught here, so a passing skip can look like a failure in the log; the
+/// "SKIPPED" line the caller prints is the authoritative record.
+fn render_unless_no_gpu(harness: &mut Harness<'_, VectifyApp>) -> Option<image::RgbaImage> {
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    match catch_unwind(AssertUnwindSafe(|| harness.render())) {
+        Ok(Ok(image)) => Some(image),
+        Ok(Err(e)) => panic!("rendering the UI failed: {e}"),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or_default();
+            if message.contains("Failed to create render state") {
+                None
+            } else {
+                resume_unwind(payload)
+            }
+        }
+    }
+}
+
 /// Render the real UI offscreen through wgpu and write a PNG.
 ///
 /// This is both a visual check and a guard against the app failing to render
 /// at all on a real GPU path, which the pure-layout tests above cannot catch.
-/// Skipped automatically when no adapter is available, so it does not turn
-/// into a spurious failure on machines without one.
+/// The GPU step is skipped when no adapter is available (see
+/// [`render_unless_no_gpu`]) so it does not turn into a spurious failure on
+/// machines without one; the trace and UI checks before it still run.
 #[test]
 fn renders_to_an_image() {
     // Use a richer scene than the other tests: this snapshot doubles as the
@@ -217,7 +250,15 @@ fn renders_to_an_image() {
     }
     harness.run_steps(2);
 
-    let image = harness.render().expect("render the UI");
+    // Checked before the GPU step, so that machines which cannot render still
+    // verify that the UI produced a real result rather than passing vacuously.
+    assert!(harness.state().has_preview(), "no preview arrived within the timeout");
+    assert!(harness.state().last_error().is_none(), "{:?}", harness.state().last_error());
+
+    let Some(image) = render_unless_no_gpu(&mut harness) else {
+        eprintln!("SKIPPED the offscreen render: this machine has no GPU adapter");
+        return;
+    };
     let path = std::env::var("VECTIFY_SNAPSHOT")
         .unwrap_or_else(|_| "../../target/vectify-ui.png".to_string());
     image.save(&path).expect("write snapshot");
